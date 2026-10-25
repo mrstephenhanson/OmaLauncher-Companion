@@ -18,21 +18,40 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle
+      - name: Setup Gradle 8.10.2
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
 
       - name: Extract Project Zip
         run: |
           unzip -o *.zip
           ls -la OmaCompanion
 
+      - name: Accept Android Licenses & SDK Setup
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
+      - name: Patch Java 17 Compatibility
+        run: |
+          cd OmaCompanion
+          python3 -c "
+with open('app/build.gradle.kts', 'r') as f:
+    c = f.read()
+if 'compileOptions' not in c:
+    c = c.replace('buildFeatures {', 'compileOptions {\n        sourceCompatibility = JavaVersion.VERSION_17\n        targetCompatibility = JavaVersion.VERSION_17\n    }\n    buildFeatures {')
+    with open('app/build.gradle.kts', 'w') as f:
+        f.write(c)
+"
+
       - name: Build APK with Gradle
         run: |
           cd OmaCompanion
-          gradle assembleDebug --no-daemon
+          gradle assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK to Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: OmaCompanion-apk
           path: "**/app/build/outputs/apk/debug/*.apk"
+          if-no-files-found: error
