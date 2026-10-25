@@ -1,0 +1,38 @@
+name: Build OmaCompanion APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Extract Project Zip
+        run: |
+          unzip -o *.zip
+          ls -la OmaCompanion
+
+      - name: Build APK with Gradle
+        run: |
+          cd OmaCompanion
+          gradle assembleDebug --no-daemon
+
+      - name: Upload APK to Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OmaCompanion-apk
+          path: "**/app/build/outputs/apk/debug/*.apk"
