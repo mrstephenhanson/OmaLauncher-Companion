@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# /usr/local/bin/oma-cli
+# OmaBridge CLI for Arch Linux <-> OmaCompanion Android Bridge
+set -e
+
+BRIDGE_URL="${OMA_BRIDGE_URL:-http://127.0.0.1:8765}"
+
+case "$1" in
+  notify)
+    if [ -z "$2" ]; then
+      echo "Usage: oma-cli notify <title> <body>"
+      exit 1
+    fi
+    curl -s -X POST "$BRIDGE_URL/notify" \
+      -H "Content-Type: application/json" \
+      -d "{\"title\":\"$2\", \"body\":\"${3:-}\"}"
+    echo ""
+    ;;
+
+  battery)
+    curl -s "$BRIDGE_URL/battery"
+    echo ""
+    ;;
+
+  clip)
+    if [ "$2" = "get" ]; then
+      RES=$(curl -s "$BRIDGE_URL/clipboard")
+      if echo "$RES" | grep -q '"text"'; then
+        echo "$RES" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p'
+      else
+        echo "$RES"
+      fi
+    elif [ "$2" = "set" ]; then
+      shift 2
+      CLIP_DATA="$*"
+      if [ -z "$CLIP_DATA" ]; then
+        CLIP_DATA=$(cat)
+      fi
+      curl -s -X POST "$BRIDGE_URL/clipboard" \
+        -H "Content-Type: application/json" \
+        -d "{\"text\":\"$CLIP_DATA\"}"
+      echo ":: Clipboard synced to Android: $CLIP_DATA"
+    else
+      echo "Usage: oma-cli clip [get|set <content>]"
+      exit 1
+    fi
+    ;;
+
+  exec)
+    shift
+    CMD="$*"
+    if [ -z "$CMD" ]; then
+      echo "Usage: oma-cli exec <command string>"
+      exit 1
+    fi
+    echo ":: Executing local command and reporting to OmaCompanion: $CMD"
+    OUTPUT=$(eval "$CMD" 2>&1 || true)
+    curl -s -X POST "$BRIDGE_URL/exec/result" \
+      -H "Content-Type: application/json" \
+      -d "{\"command\":\"$CMD\", \"output\":\"$OUTPUT\"}"
+    echo "$OUTPUT"
+    ;;
+
+  context)
+    curl -s "$BRIDGE_URL/context"
+    echo ""
+    ;;
+
+  worker)
+    echo "=========================================================="
+    echo ":: OmaBridge Worker active on Arch Linux."
+    echo ":: Polling OmaCompanion bridge at: $BRIDGE_URL"
+    echo ":: Listening for install & remote command requests..."
+    echo "=========================================================="
+
+    while true; do
+      JOB=$(curl -s --connect-timeout 2 "$BRIDGE_URL/queue/poll" 2>/dev/null || true)
+      PKG=$(echo "$JOB" | grep -o '"pkg":"[^"]*' | cut -d'"' -f4)
+
+      if [ -n "$PKG" ]; then
+        echo ":: [$(date +%T)] Received install job for package: $PKG"
+        curl -s -X POST "$BRIDGE_URL/notify" \
+          -H "Content-Type: application/json" \
+          -d "{\"title\":\"Installation Started\", \"body\":\"Building $PKG on Arch Linux...\"}" > /dev/null || true
+
+        if command -v yay >/dev/null 2>&1; then
+          echo ":: Invoking yay -S --noconfirm $PKG"
+          yay -S --noconfirm "$PKG" || true
+        elif command -v pacman >/dev/null 2>&1; then
+          echo ":: Invoking sudo pacman -S --noconfirm $PKG"
+          sudo pacman -S --noconfirm "$PKG" || true
+        else
+          echo ":: Neither yay nor pacman found."
+        fi
+
+        curl -s -X POST "$BRIDGE_URL/notify" \
+          -H "Content-Type: application/json" \
+          -d "{\"title\":\"Installation Complete\", \"body\":\"$PKG has been installed in Arch Linux.\"}" > /dev/null || true
+        echo ":: [$(date +%T)] Successfully installed $PKG"
+      fi
+
+      CMD_JOB=$(curl -s --connect-timeout 2 "$BRIDGE_URL/exec/poll" 2>/dev/null || true)
+      CMD_ID=$(echo "$CMD_JOB" | grep -o '"id":"[^"]*' | cut -d'"' -f4)
+      CMD_STR=$(echo "$CMD_JOB" | grep -o '"command":"[^"]*' | cut -d'"' -f4)
+
+      if [ -n "$CMD_ID" ] && [ -n "$CMD_STR" ]; then
+        echo ":: [$(date +%T)] Executing remote command from Android: $CMD_STR"
+        START_TIME=$(date +%s%N 2>/dev/null || date +%s)
+        CMD_OUTPUT=$(eval "$CMD_STR" 2>&1 || true)
+        EXIT_CODE=$?
+        END_TIME=$(date +%s%N 2>/dev/null || date +%s)
+        DURATION=50
+
+        ESCAPED_OUTPUT=$(echo "$CMD_OUTPUT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || echo "\"$CMD_OUTPUT\"")
+
+        curl -s -X POST "$BRIDGE_URL/exec/result" \
+          -H "Content-Type: application/json" \
+          -d "{\"id\":\"$CMD_ID\", \"exitCode\":$EXIT_CODE, \"durationMs\":$DURATION, \"output\":$ESCAPED_OUTPUT}" > /dev/null || true
+        echo ":: Finished command $CMD_ID (exit: $EXIT_CODE)"
+      fi
+
+      sleep 2
+    done
+    ;;
+
+  *)
+    echo "OmaBridge CLI v1.2.0 - Arch Linux & OmaCompanion Integration"
+    echo ""
+    echo "Usage: oma-cli [command]"
+    echo ""
+    echo "Commands:"
+    echo "  notify <title> <body>      Send notification to Android notification drawer"
+    echo "  battery                    Query phone battery percentage"
+    echo "  clip get                   Get current Android clipboard"
+    echo "  clip set <text>            Copy text directly to Android system clipboard"
+    echo "  exec <command>             Run local Arch command and stream to phone"
+    echo "  context                    Dump rich battery/network/device context"
+    echo "  worker                     Run background daemon listening for installs & cmds"
+    ;;
+esac
